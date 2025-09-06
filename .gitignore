@@ -2,7 +2,6 @@ output
 .DS_STORE
 *.xlsx
 *.xls
-*.csv
 !rates.xlsx
 !rates.xls
 !data.csv
