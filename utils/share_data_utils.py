@@ -56,6 +56,59 @@ TimedFmvWithInrRate = t.TypedDict(
 
 
 price_map_cache: t.Dict[str, t.List[TimedFmv]] = {}
+usd_inr_cache: t.List[TimedFmv] = []
+
+
+def __parse_date_from_adobe_format(date_str: str) -> int:
+    """
+    Parse date from adobe_price_history.csv format: MM/DD/YYYY
+    """
+    from datetime import datetime
+    date_time = datetime.strptime(date_str, "%m/%d/%Y")
+    return date_utils.epoch_in_ms(date_time)
+
+
+def __parse_date_from_usd_inr_format(date_str: str) -> int:
+    """
+    Parse date from usd_inr_price_history.csv format: DD-MM-YYYY
+    """
+    from datetime import datetime
+    date_time = datetime.strptime(date_str, "%d-%m-%Y")
+    return date_utils.epoch_in_ms(date_time)
+
+
+def __init_usd_inr_map() -> t.List[TimedFmv]:
+    """
+    Initialize USD to INR exchange rate cache
+    """
+    global usd_inr_cache
+    if not usd_inr_cache:
+        print("Parsing USD/INR exchange rate map")
+        script_path = os.path.realpath(os.path.dirname(__file__))
+        usd_inr_path = os.path.join(
+            script_path,
+            os.pardir,
+            "historic_data",
+            "usd_inr_price_history.csv",
+        )
+        if not os.path.exists(usd_inr_path):
+            raise AssertionError(
+                f"USD/INR historical data NOT present at {usd_inr_path}"
+            )
+        df = pd.read_csv(usd_inr_path)
+
+        for _, data in df.iterrows():
+            entry_time_in_ms = __parse_date_from_usd_inr_format(data["Date"])
+            # Clean the price value (remove any formatting)
+            price_str = str(data["Price"]).replace(',', '')
+            usd_inr_cache.append(
+                {"entry_time_in_millis": entry_time_in_ms, "fmv": float(price_str)}
+            )
+
+        # Sort by date for efficient lookup
+        usd_inr_cache.sort(key=lambda x: x["entry_time_in_millis"])
+
+    return usd_inr_cache
 
 
 def __init_map(ticker: str) -> t.List[TimedFmv]:
@@ -63,6 +116,17 @@ def __init_map(ticker: str) -> t.List[TimedFmv]:
         print(f"Parsing FMV price map for ticker = {ticker}")
         ticker_price_map: t.List[TimedFmv] = []
         script_path = os.path.realpath(os.path.dirname(__file__))
+        
+        # Use the new adobe_price_history.csv file
+        if ticker.lower() == "adbe":
+            historic_share_path = os.path.join(
+                script_path,
+                os.pardir,
+                "historic_data",
+                "adobe_price_history.csv",
+            )
+        else:
+            # Fallback to old structure for other tickers
         historic_share_path = os.path.join(
             script_path,
             os.pardir,
@@ -71,6 +135,7 @@ def __init_map(ticker: str) -> t.List[TimedFmv]:
             ticker.lower(),
             "data.csv",
         )
+        
         if not os.path.exists(historic_share_path):
             raise AssertionError(
                 f"Historic share data for share {ticker} NOT present at {historic_share_path}"
@@ -78,13 +143,25 @@ def __init_map(ticker: str) -> t.List[TimedFmv]:
         df = pd.read_csv(historic_share_path)
 
         for _, data in df.iterrows():
+            if ticker.lower() == "adbe":
+                # Handle adobe_price_history.csv format
+                entry_time_in_ms = __parse_date_from_adobe_format(data["Date"])
+                # Clean the Close/Last value (remove $ sign if present)
+                close_price_str = str(data["Close/Last"]).replace('$', '').replace(',', '')
+                price = float(close_price_str)
+            else:
+                # Handle old data.csv format
             entry_time_in_ms = date_utils.parse_yyyy_mm_dd(data["Date"])[
                 "time_in_millis"
             ]
+                price = data["Close"]
+            
             ticker_price_map.append(
-                {"entry_time_in_millis": entry_time_in_ms, "fmv": data["Close"]}
+                {"entry_time_in_millis": entry_time_in_ms, "fmv": price}
             )
 
+        # Sort by date for efficient lookup
+        ticker_price_map.sort(key=lambda x: x["entry_time_in_millis"])
         price_map_cache[ticker] = ticker_price_map
 
     return price_map_cache[ticker]
@@ -108,10 +185,44 @@ def get_fmv(ticker: str, purchase_time_in_ms: int) -> float:
             return entry_data["fmv"]
 
         previous_entry_data = entry_data
+    
+    # Updated error message to reflect new file locations
+    if ticker.lower() == "adbe":
+        ticker_share_price = "historic_data/adobe_price_history.csv"
+    else:
     ticker_share_price = os.path.join("historic_data", "shares", ticker, "data.csv")
+    
     raise AssertionError(
         f"No FMV data for share ticker {ticker} in {ticker_share_price} for date "
         + f"{date_utils.log_timestamp(purchase_time_in_ms)}"
+    )
+
+
+def get_usd_inr_rate(time_in_ms: int) -> float:
+    """
+    Get USD to INR exchange rate for a given timestamp
+    """
+    usd_inr_data = __init_usd_inr_map()
+    
+    previous_entry_data = None
+    for entry_data in usd_inr_data:
+        entry_time_in_ms = entry_data["entry_time_in_millis"]
+        if entry_time_in_ms >= time_in_ms:
+            if entry_time_in_ms > time_in_ms:
+                if previous_entry_data:
+                    return previous_entry_data["fmv"]
+                else:
+                    return entry_data["fmv"]
+            return entry_data["fmv"]
+        previous_entry_data = entry_data
+    
+    # If no future data found, use the last available rate
+    if previous_entry_data:
+        return previous_entry_data["fmv"]
+    
+    raise AssertionError(
+        f"No USD/INR rate data available for date "
+        + f"{date_utils.log_timestamp(time_in_ms)}"
     )
 
 
@@ -150,10 +261,14 @@ def get_peak_price_in_inr(
             ),
         )
     )
+    
+    # Use the new USD/INR rate function or fallback to RBI rates
     price_map_with_inr_rate: t.Iterator[TimedFmvWithInrRate] = map(
         lambda price: {
             **price,
-            "inr_rate": rbi_rates_utils.get_rate_for_prev_mon_for_time_in_ms(
+            "inr_rate": get_usd_inr_rate(price["entry_time_in_millis"])
+            if ticker_currency_info[ticker] == "USD"
+            else rbi_rates_utils.get_rate_for_prev_mon_for_time_in_ms(
                 ticker_currency_info[ticker], price["entry_time_in_millis"]
             ),
         },

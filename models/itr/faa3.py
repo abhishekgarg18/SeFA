@@ -10,3 +10,4 @@ class FAA3:
     purchase_price: float
     peak_price: float
     closing_price: float
+    sales_proceeds: float = 0.0  # New field for sales/redemption proceeds

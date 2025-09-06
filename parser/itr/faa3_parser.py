@@ -89,6 +89,7 @@ def parse_org_purchases(
                     ticker, start_time_in_ms, end_time_in_ms
                 ),
                 closing_price=previous_sum * closing_inr_price,
+                sales_proceeds=0.0,  # No sales for accumulated previous purchases
             )
         )
 
@@ -109,6 +110,7 @@ def parse_org_purchases(
                     currency_code, purchase.date["time_in_millis"]
                 ),
                 closing_price=purchase.quantity * closing_inr_price,
+                sales_proceeds=0.0,  # No sales tracking implemented yet
             )
         )
 
@@ -124,19 +126,23 @@ def parse_org_purchases(
         fa_entries,
         True,
     )
+    
+    # Updated CSV output with all required columns
     file_utils.write_csv_to_file(
         os.path.join(output_folder_abs_path, ticker),
         "fa_entries.csv",
         [
-            "Country/Region Name and Code",
+            "Country",
             "Name of Entity",
             "Address of Entity",
-            "ZIP Code",
+            "Zip Code",
             "Nature of Entity",
-            "Date of acquiring the interest",
-            "Initial value of the investment",
-            "Peak value of the investment during the Period",
-            "Closing Value",
+            "Date of Acquisition",
+            "Initial Investment",
+            "Peak Investment",
+            "Closing Balance",
+            "Total Gross Amount",
+            "Sales Proceeds or Redemption during the year"
         ],
         map(
             lambda entry: (
@@ -149,6 +155,8 @@ def parse_org_purchases(
                 round(entry.purchase_price),
                 round(entry.peak_price),
                 round(entry.closing_price),
+                round(entry.peak_price),  # Total Gross Amount = Peak Investment
+                round(entry.sales_proceeds)  # Sales Proceeds from model
             ),
             fa_entries,
         ),
